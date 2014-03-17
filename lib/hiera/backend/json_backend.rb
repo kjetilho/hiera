@@ -3,53 +3,33 @@ class Hiera
     class Json_backend
       def initialize(cache=nil)
         require 'json'
-
         Hiera.debug("Hiera JSON backend starting")
 
         @cache = cache || Filecache.new
       end
 
-      def lookup(key, scope, order_override, resolution_type)
+      def lookup_source(source, key, scope)
         answer = nil
 
-        Hiera.debug("Looking up #{key} in JSON backend")
+        jsonfile = Backend.datafile(:json, scope, source, "json") || return
 
-        Backend.datasources(scope, order_override) do |source|
-          Hiera.debug("Looking for data source #{source}")
+        Hiera.debug("Looking for #{key} in JSON data source #{source}")
 
-          jsonfile = Backend.datafile(:json, scope, source, "json") || next
+        data = @cache.read_file(jsonfile, Hash) do |data|
+          JSON.parse(data)
+        end
 
-          next unless File.exist?(jsonfile)
-
-          data = @cache.read_file(jsonfile, Hash) do |data|
-            JSON.parse(data)
-          end
-
-          next if data.empty?
-          next unless data.include?(key)
-
-          # for array resolution we just append to the array whatever
-          # we find, we then goes onto the next file and keep adding to
-          # the array
-          #
-          # for priority searches we break after the first found data item
-          new_answer = Backend.parse_answer(data[key], scope)
-          case resolution_type
-          when :array
-            raise Exception, "Hiera type mismatch: expected Array and got #{new_answer.class}" unless new_answer.kind_of? Array or new_answer.kind_of? String
-            answer ||= []
-            answer << new_answer
-          when :hash
-            raise Exception, "Hiera type mismatch: expected Hash and got #{new_answer.class}" unless new_answer.kind_of? Hash
-            answer ||= {}
-            answer = Backend.merge_answer(new_answer,answer)
-          else
-            answer = new_answer
-            break
-          end
+        if not data.empty? and data.include?(key)
+          # Extra logging that we found the key. This can be outputted
+          # multiple times if the resolution type is array or hash but that
+          # should be expected as the logging will then tell the user ALL the
+          # places where the key is found.
+          Hiera.debug("Found #{key} in #{source}")
+          answer = Backend.parse_answer(data[key], scope)
         end
 
         return answer
+
       end
     end
   end

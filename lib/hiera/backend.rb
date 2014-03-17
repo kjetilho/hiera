@@ -196,6 +196,9 @@ class Hiera
       # Backend instances are cached so if you need to connect to any
       # databases then do so in your constructor, future calls to your
       # backend will not create new instances
+      #
+      # If backend_traversal is configured to 'interleaved', each
+      # backend will be tried in turn on each level in the hierarchy
       def lookup(key, default, scope, order_override, resolution_type)
         @backends ||= {}
         answer = nil
@@ -203,21 +206,45 @@ class Hiera
         Config[:backends].each do |backend|
           if constants.include?("#{backend.capitalize}_backend") || constants.include?("#{backend.capitalize}_backend".to_sym)
             @backends[backend] ||= Backend.const_get("#{backend.capitalize}_backend").new
-            new_answer = @backends[backend].lookup(key, scope, order_override, resolution_type)
+          end
+        end
 
-            if not new_answer.nil?
-              case resolution_type
-              when :array
-                raise Exception, "Hiera type mismatch: expected Array and got #{new_answer.class}" unless new_answer.kind_of? Array or new_answer.kind_of? String
-                answer ||= []
-                answer << new_answer
-              when :hash
-                raise Exception, "Hiera type mismatch: expected Hash and got #{new_answer.class}" unless new_answer.kind_of? Hash
-                answer ||= {}
-                answer = merge_answer(new_answer,answer)
+        catch(:found) do
+          case Config[:backend_traversal]
+          when :separate
+            Config[:backends].each do |backend|
+              Hiera.debug("Looking up #{key} in #{backend.upcase} backend")
+              if @backends[backend].respond_to? :lookup_source
+                Backend.datasources(scope, order_override) do |source|
+                  new_answer = @backends[backend].lookup_source(source, key, scope)
+                  answer = process_answer(answer, new_answer, resolution_type)
+                  if resolution_type == :priority and not answer.nil?
+                    throw :found
+                  end
+                end
               else
-                answer = new_answer
-                break
+                new_answer = @backends[backend].lookup(key, scope, order_override, resolution_type)
+                answer = process_answer(answer, new_answer, resolution_type)
+                if resolution_type == :priority and not answer.nil?
+                  throw :found
+                end
+              end
+            end
+          when :interleaved
+            @done = {}
+            Backend.datasources(scope, order_override) do |source|
+              Config[:backends].each do |backend|
+                next if @done[backend]
+                if @backends[backend].respond_to? :lookup_source
+                  new_answer = @backends[backend].lookup_source(source, key, scope)
+                else
+                  new_answer = @backends[backend].lookup(key, scope, order_override, resolution_type)
+                  @done[backend] = true
+                end
+                answer = process_answer(answer, new_answer, resolution_type)
+                if resolution_type == :priority and not answer.nil?
+                  throw :found
+                end
               end
             end
           end
@@ -227,6 +254,26 @@ class Hiera
         answer = parse_string(default, scope) if answer.nil? and default.is_a?(String)
 
         return default if answer.nil?
+        return answer
+      end
+
+      # Validate and process each returned answer from the backends
+      def process_answer(answer, new_answer, resolution_type)
+        if not new_answer.nil?
+          case resolution_type
+          when :array
+            raise Exception, "Hiera type mismatch: expected Array and got #{new_answer.class}" unless new_answer.kind_of? Array or new_answer.kind_of? String
+            answer ||= []
+            answer << new_answer
+          when :hash
+            raise Exception, "Hiera type mismatch: expected Hash and got #{new_answer.class}" unless new_answer.kind_of? Hash
+            answer ||= {}
+            answer = merge_answer(new_answer,answer)
+          else
+            answer = new_answer
+          end
+        end
+
         return answer
       end
 

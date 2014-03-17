@@ -1,4 +1,6 @@
 class Hiera::Config
+  # Default method is first in list
+  BACKEND_TRAVERSAL_METHODS = [ :separate, :interleaved ]
   class << self
     ##
     # load takes a string or hash as input, strings are treated as filenames
@@ -12,6 +14,7 @@ class Hiera::Config
     def load(source)
       @config = {:backends => "yaml",
                  :hierarchy => "common",
+                 :backend_traversal => BACKEND_TRAVERSAL_METHODS[0],
                  :merge_behavior => :native }
 
       if source.is_a?(String)
@@ -42,6 +45,7 @@ class Hiera::Config
         @config[:logger] = "console"
         Hiera.logger = "console"
       end
+      @config[:backend_traversal] = @config[:backend_traversal].to_sym
     
       self.validate!
 
@@ -58,6 +62,10 @@ class Hiera::Config
           Hiera.warn "Must have 'deep_merge' gem installed."
           @config[:merge_behavior] = :native
         end
+      end
+      unless BACKEND_TRAVERSAL_METHODS.include? @config[:backend_traversal]
+        Hiera.warn "Ignoring unrecognized backend_traversal method.  Using default."
+        @config[:backend_traversal] = BACKEND_TRAVERSAL_METHODS[0]
       end
     end
 
